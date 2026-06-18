@@ -1,0 +1,55 @@
+# Prometheus Anomaly Detection Service — configuration
+#
+# Each entry under `checks` defines one thing to monitor: a PromQL query,
+# which detector to run against it, the detector's tuning params, and how
+# much history to pull for the baseline.
+
+prometheus:
+  url: "http://localhost:9090"
+  token: ""          # optional bearer token, leave blank if not needed
+  timeout_seconds: 15
+
+scheduler:
+  interval_seconds: 300     # how often to run all checks (e.g. every 5 min)
+
+webhook:
+  url: "https://your-mattermost-instance/hooks/xxxxxxxxxxxxxxxxx"
+  # Set to "mattermost" for an incoming-webhook-compatible {"text": "..."} payload,
+  # or "generic" to send the full structured JSON payload (for n8n/automation layers).
+  format: "mattermost"
+  timeout_seconds: 10
+
+  # Avoid re-notifying every tick while an anomaly is still firing.
+  # Re-alert only after this many seconds if it's still anomalous.
+  renotify_after_seconds: 1800
+
+checks:
+  - name: "high_cpu_usage"
+    query: 'avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) by (instance)'
+    detector: "zscore"
+    params:
+      threshold: 3.0
+      min_samples: 10
+    history_window: "2h"     # how far back to pull baseline samples
+    step: "1m"
+
+  - name: "request_error_rate"
+    query: 'sum(rate(http_requests_total{status_code=~"5.."}[5m])) by (job)'
+    detector: "robust_mad"
+    params:
+      threshold: 3.5
+      min_samples: 10
+    history_window: "2h"
+    step: "1m"
+
+  - name: "weekly_request_volume"
+    query: 'sum(rate(http_requests_total[5m])) by (job)'
+    detector: "seasonal"
+    params:
+      threshold: 2.0
+      min_samples: 3
+      seasonal_margin_pct: 0.15
+    # Seasonal checks compare current value against same time last
+    # week / 2 weeks / 3 weeks ago, rather than a flat recent window.
+    seasonal_offsets: ["1w", "2w", "3w"]
+    seasonal_window: "30m"   # window around the offset point to average over
