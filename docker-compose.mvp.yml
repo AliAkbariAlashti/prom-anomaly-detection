@@ -1,0 +1,44 @@
+services:
+  demo-api:
+    image: python:3.12-slim
+    working_dir: /srv
+    command: python /srv/scripts/demo_metrics_service.py
+    volumes:
+      - ./scripts:/srv/scripts:ro
+    ports:
+      - "9102:9102"
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=2h
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9091:9090"
+    depends_on:
+      - demo-api
+
+  anomaly-detector:
+    build: .
+    environment:
+      ANOMALY_CONFIG_PATH: /srv/config/local-mvp.yaml
+    volumes:
+      - ./config:/srv/config:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      - prometheus
+      - demo-api
+
+  load-factory:
+    image: python:3.12-slim
+    working_dir: /srv
+    command: python /srv/scripts/load_factory.py --target http://demo-api:9102 --loop
+    volumes:
+      - ./scripts:/srv/scripts:ro
+    depends_on:
+      - demo-api
+    profiles:
+      - load

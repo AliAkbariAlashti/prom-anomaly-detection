@@ -1,0 +1,41 @@
+prometheus:
+  url: "http://prometheus:9090"
+  token: ""
+  timeout_seconds: 15
+
+scheduler:
+  interval_seconds: 30
+
+webhook:
+  url: "http://demo-api:9102/webhook"
+  format: "generic"
+  timeout_seconds: 10
+  renotify_after_seconds: 120
+
+checks:
+  - name: "checkout_traffic_spike"
+    query: 'sum(rate(demo_http_requests_total{route="/checkout"}[30s])) by (route)'
+    detector: "zscore"
+    params:
+      threshold: 2.0
+      min_samples: 6
+    history_window: "5m"
+    step: "15s"
+
+  - name: "checkout_error_spike"
+    query: 'sum(rate(demo_http_errors_total{route="/checkout"}[30s])) by (route)'
+    detector: "robust_mad"
+    params:
+      threshold: 3.5
+      min_samples: 6
+    history_window: "5m"
+    step: "15s"
+
+  - name: "checkout_latency_spike"
+    query: 'sum(rate(demo_http_request_latency_seconds_sum{route="/checkout"}[30s])) by (route) / sum(rate(demo_http_request_latency_seconds_count{route="/checkout"}[30s])) by (route)'
+    detector: "zscore"
+    params:
+      threshold: 2.5
+      min_samples: 6
+    history_window: "5m"
+    step: "15s"
