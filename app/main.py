@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 
-from .config import load_config
+from .config import load_tenants
 from .runner import Runner
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -20,33 +20,38 @@ logger = logging.getLogger(__name__)
 
 CONFIG_PATH = os.environ.get("ANOMALY_CONFIG_PATH", "config/config.yaml")
 
-config = load_config(CONFIG_PATH)
-runner = Runner(config)
+tenants = load_tenants(CONFIG_PATH)
+runners: dict[str, Runner] = {t.name: Runner(t) for t in tenants}
 scheduler = BackgroundScheduler()
 
 
-def scheduled_job():
-    logger.info("Running scheduled anomaly check pass...")
-    results = runner.run_once()
-    anomalies = [r for r in results if r.get("is_anomaly")]
-    logger.info("Pass complete: %d series checked, %d anomalies", len(results), len(anomalies))
+def make_job(name: str, runner: Runner):
+    def job():
+        logger.info("[%s] Running scheduled anomaly check pass...", name)
+        results = runner.run_once()
+        anomalies = [r for r in results if r.get("is_anomaly")]
+        logger.info("[%s] Pass complete: %d series checked, %d anomalies", name, len(results), len(anomalies))
+    return job
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    scheduler.add_job(
-        scheduled_job,
-        "interval",
-        seconds=config.scheduler.interval_seconds,
-        id="anomaly_check_loop",
-        next_run_time=None,  # don't fire instantly; let /check or first interval trigger it
-    )
+    for tenant in tenants:
+        scheduler.add_job(
+            make_job(tenant.name, runners[tenant.name]),
+            "interval",
+            seconds=tenant.scheduler.interval_seconds,
+            id=f"anomaly_check_{tenant.name}",
+            next_run_time=None,
+        )
+        logger.info(
+            "Tenant '%s': interval=%ss, prometheus=%s, %d checks",
+            tenant.name,
+            tenant.scheduler.interval_seconds,
+            tenant.prometheus.url,
+            len(tenant.checks),
+        )
     scheduler.start()
-    logger.info(
-        "Scheduler started, interval=%ss, %d checks configured",
-        config.scheduler.interval_seconds,
-        len(config.checks),
-    )
     yield
     scheduler.shutdown()
 
@@ -62,15 +67,48 @@ def healthz():
 @app.get("/status")
 def status():
     return {
-        "checks_configured": [c.name for c in config.checks],
-        "interval_seconds": config.scheduler.interval_seconds,
+        name: {
+            "prometheus": runners[name].config.prometheus.url,
+            "checks_configured": [c.name for c in runners[name].config.checks],
+            "interval_seconds": runners[name].config.scheduler.interval_seconds,
+            "last_run_results": runners[name].last_run_results,
+        }
+        for name in runners
+    }
+
+
+@app.get("/status/{tenant}")
+def tenant_status(tenant: str):
+    from fastapi import HTTPException
+    runner = runners.get(tenant)
+    if not runner:
+        raise HTTPException(status_code=404, detail=f"Tenant '{tenant}' not found")
+    return {
+        "prometheus": runner.config.prometheus.url,
+        "checks_configured": [c.name for c in runner.config.checks],
+        "interval_seconds": runner.config.scheduler.interval_seconds,
         "last_run_results": runner.last_run_results,
     }
 
 
 @app.post("/check")
-def trigger_check():
-    """Manually trigger a check pass immediately (useful for testing)."""
+def trigger_all():
+    """Trigger a check pass for all tenants immediately."""
+    out = {}
+    for name, runner in runners.items():
+        results = runner.run_once()
+        anomalies = [r for r in results if r.get("is_anomaly")]
+        out[name] = {"checked": len(results), "anomalies": len(anomalies)}
+    return out
+
+
+@app.post("/check/{tenant}")
+def trigger_tenant(tenant: str):
+    """Trigger a check pass for a single tenant immediately."""
+    from fastapi import HTTPException
+    runner = runners.get(tenant)
+    if not runner:
+        raise HTTPException(status_code=404, detail=f"Tenant '{tenant}' not found")
     results = runner.run_once()
     anomalies = [r for r in results if r.get("is_anomaly")]
     return {"checked": len(results), "anomalies": len(anomalies), "results": results}

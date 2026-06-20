@@ -41,6 +41,7 @@ class CheckConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
+    name: str = "default"
     prometheus: PrometheusConfig
     scheduler: SchedulerConfig
     webhook: WebhookConfig
@@ -48,6 +49,22 @@ class AppConfig(BaseModel):
 
 
 def load_config(path: str | Path) -> AppConfig:
+    """Load a single-tenant config (legacy / backward-compatible)."""
     path = Path(path)
     raw = yaml.safe_load(path.read_text())
     return AppConfig.model_validate(raw)
+
+
+def load_tenants(path: str | Path) -> list[AppConfig]:
+    """Load config supporting both single-tenant and multi-tenant formats.
+
+    Multi-tenant format uses a top-level ``tenants`` list; each entry is an
+    AppConfig dict plus an optional ``name`` field.  Single-tenant format
+    (legacy) is auto-wrapped into a one-element list.
+    """
+    path = Path(path)
+    raw = yaml.safe_load(path.read_text())
+    if "tenants" in raw:
+        return [AppConfig.model_validate(t) for t in raw["tenants"]]
+    # Legacy single-tenant file — wrap transparently.
+    return [AppConfig.model_validate(raw)]

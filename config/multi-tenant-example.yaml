@@ -1,0 +1,89 @@
+# Multi-tenant config — one entry per Prometheus instance.
+# Each tenant has its own Prometheus URL, Mattermost bot webhook, and checks.
+# The single-tenant format (config.yaml) still works unchanged.
+
+tenants:
+
+  - name: "team-alpha"
+    prometheus:
+      url: "http://prom-alpha.internal:9090"
+      token: ""                  # optional bearer token
+      timeout_seconds: 15
+
+    scheduler:
+      interval_seconds: 300      # check every 5 min
+
+    webhook:
+      url: "https://mattermost.example.com/hooks/TEAM_ALPHA_TOKEN"
+      format: "mattermost"
+      timeout_seconds: 10
+      renotify_after_seconds: 1800
+
+    checks:
+      - name: "high_cpu_usage"
+        query: 'avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) by (instance)'
+        detector: "zscore"
+        params:
+          threshold: 3.0
+          min_samples: 10
+        history_window: "2h"
+        step: "1m"
+
+      - name: "request_error_rate"
+        query: 'sum(rate(http_requests_total{status_code=~"5.."}[5m])) by (job)'
+        detector: "robust_mad"
+        params:
+          threshold: 3.5
+          min_samples: 10
+        history_window: "2h"
+        step: "1m"
+
+  - name: "team-beta"
+    prometheus:
+      url: "http://prom-beta.internal:9090"
+      token: "Bearer eyJhbGciOi..."   # example: authenticated Prometheus
+      timeout_seconds: 15
+
+    scheduler:
+      interval_seconds: 60       # more aggressive — check every minute
+
+    webhook:
+      url: "https://mattermost.example.com/hooks/TEAM_BETA_TOKEN"
+      format: "mattermost"
+      timeout_seconds: 10
+      renotify_after_seconds: 900  # re-alert after 15 min instead of 30
+
+    checks:
+      - name: "weekly_traffic"
+        query: 'sum(rate(http_requests_total[5m])) by (job)'
+        detector: "seasonal"
+        params:
+          threshold: 2.0
+          min_samples: 3
+          seasonal_margin_pct: 0.15
+        seasonal_offsets: ["1w", "2w", "3w"]
+        seasonal_window: "30m"
+
+  - name: "infra"
+    prometheus:
+      url: "http://prom-infra.internal:9090"
+      timeout_seconds: 15
+
+    scheduler:
+      interval_seconds: 120
+
+    webhook:
+      url: "https://mattermost.example.com/hooks/INFRA_BOT_TOKEN"
+      format: "mattermost"
+      timeout_seconds: 10
+      renotify_after_seconds: 3600   # noisy infra — only re-alert hourly
+
+    checks:
+      - name: "disk_pressure"
+        query: 'node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}'
+        detector: "zscore"
+        params:
+          threshold: 2.5
+          min_samples: 10
+        history_window: "6h"
+        step: "5m"
